@@ -9,34 +9,45 @@ async Task MainAsync()
     var listener = new HttpListener();
     listener.Prefixes.Add("http://localhost:52369/");
     listener.Start();
-    Console.WriteLine("Server running on http://localhost:52369");
+    Console.WriteLine("NowPlayingServer running on http://localhost:52369");
 
     var mediaManager = new MediaManager();
     await mediaManager.StartAsync();
+
+    byte[]? lastThumbnailBytes = null;
 
     while (true)
     {
         var context = await listener.GetContextAsync();
         var response = context.Response;
+        var path = context.Request.Url?.AbsolutePath;
 
-        if (context.Request.Url?.AbsolutePath == "/now-playing")
+        if (path == "/now-playing")
         {
             var mediaSession = mediaManager.GetFocusedSession();
 
             if (mediaSession == null)
             {
-                var errorJson = "{\"error\": \"No media session found\"}";
-                var errorBuffer = Encoding.UTF8.GetBytes(errorJson);
-                response.ContentType = "application/json";
-                response.ContentLength64 = errorBuffer.Length;
-                await response.OutputStream.WriteAsync(errorBuffer, 0, errorBuffer.Length);
-                response.Close();
+                await WriteJson(response, "{\"error\": \"No media session found\"}");
                 continue;
             }
 
             var mediaProperties = await mediaSession.ControlSession.TryGetMediaPropertiesAsync();
             var playbackInfo = mediaSession.ControlSession.GetPlaybackInfo();
             var timeline = mediaSession.ControlSession.GetTimelineProperties();
+
+            // grab thumbnail bytes for /cover.jpg
+            if (mediaProperties.Thumbnail != null)
+            {
+                using var stream = await mediaProperties.Thumbnail.OpenReadAsync();
+                using var memStream = new MemoryStream();
+                await stream.AsStreamForRead().CopyToAsync(memStream);
+                lastThumbnailBytes = memStream.ToArray();
+            }
+            else
+            {
+                lastThumbnailBytes = null;
+            }
 
             var json = $@"{{
                 ""title"": ""{mediaProperties.Title}"",
@@ -47,10 +58,20 @@ async Task MainAsync()
                 ""state"": ""{playbackInfo.PlaybackStatus}""
             }}";
 
-            var buffer = Encoding.UTF8.GetBytes(json);
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            await WriteJson(response, json);
+        }
+        else if (path == "/cover.jpg")
+        {
+            if (lastThumbnailBytes == null)
+            {
+                response.StatusCode = 404;
+                response.Close();
+                continue;
+            }
+
+            response.ContentType = "image/jpeg";
+            response.ContentLength64 = lastThumbnailBytes.Length;
+            await response.OutputStream.WriteAsync(lastThumbnailBytes, 0, lastThumbnailBytes.Length);
             response.Close();
         }
         else
@@ -59,4 +80,13 @@ async Task MainAsync()
             response.Close();
         }
     }
+}
+
+async Task WriteJson(HttpListenerResponse response, string json)
+{
+    var buffer = Encoding.UTF8.GetBytes(json);
+    response.ContentType = "application/json";
+    response.ContentLength64 = buffer.Length;
+    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+    response.Close();
 }
