@@ -26,6 +26,11 @@ Simply run the application, and it will start listening on port 52369. You can t
 NowPlayingServer running on http://localhost:52369
 `
 
+## Building
+`
+dotnet publish -c Release -r win-x64 --self-contained
+`
+
 ## Requirements
 
 - Windows OS
